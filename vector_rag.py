@@ -16,7 +16,7 @@ embedding_client = OpenAI(api_key=OPENAI_API_KEY)
 
 # Configure OpenAI client for Ollama
 llm_client = OpenAI(
-    base_url="http://localhost:11434/v1",
+    base_url="http://localhost:11434",
     api_key="ollama",  # Ollama doesn't need a real API key
 )
 
