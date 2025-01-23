@@ -14,6 +14,7 @@ from llama_index.embeddings.ollama import OllamaEmbedding
 from llama_index.graph_stores.kuzu import KuzuPropertyGraphStore
 from llama_index.vector_stores.lancedb import LanceDBVectorStore
 from llama_index.llms.ollama import Ollama
+from entity_extractor import EntityRelationshipExtractor
 
 # Load environment variables
 load_dotenv()
@@ -116,29 +117,51 @@ kg_index = PropertyGraphIndex.from_documents(
     show_progress=True,
 )
 
-# Step 3: Augment the graph with external knowledge and fix erroneous relationships
+# --- Step 3: Use EntityRelationshipExtractor to automatically extract entities and relationships ---
 
-# Say we have this knowledge obtained from other sources about additional founders of BlackRock
-additional_founders = [
-    "Ben Golub",
-    "Barbara Novick",
-    "Ralph Schlosstein",
-    "Keith Anderson",
-    "Hugh Frater",
-]
+# Initialize the extractor
+extractor = EntityRelationshipExtractor(
+    llm_model="llama3.3:70b",
+    base_url="http://localhost:11434",
+    cache_enabled=True
+)
+
+# Process all documents to extract entities and relationships
+texts = [doc.text for doc in original_documents]
+entities, relationships = extractor.process_documents(texts, show_progress=True)
 
 # Open a connection to the database to modify the graph
 conn = kuzu.Connection(db)
 
-# Add additional founder nodes of type PERSON to the graph store
-for founder in additional_founders:
+# Add entities to the graph
+for entity in entities:
+    # Map the entity type to our schema's entity types
+    entity_type = entity.type.upper()
     conn.execute(
-        """
-        MATCH (o:ORGANIZATION {id: "BlackRock"})
-        MERGE (p:PERSON {id: $name, name: $name})
-        MERGE (p)-[r:IS_FOUNDER_OF]->(o)
+        f"""
+        MERGE (e:{entity_type} {{id: $name, name: $name}})
         """,
-        parameters={"name": founder},
+        parameters={"name": entity.name},
+    )
+
+# Add relationships to the graph
+for rel in relationships:
+    source_type = rel.source.type.upper()
+    target_type = rel.target.type.upper()
+    relation_type = rel.relation_type.upper()
+    
+    # Check if the relationship matches our schema
+    relationship_tuple = (source_type, relation_type, target_type)
+    conn.execute(
+        f"""
+        MATCH (s:{source_type} {{id: $source_name}})
+        MATCH (t:{target_type} {{id: $target_name}})
+        MERGE (s)-[r:{relation_type}]->(t)
+        """,
+        parameters={
+            "source_name": rel.source.name,
+            "target_name": rel.target.name
+        },
     )
 
 # Alter PERSON schema and add a birth_date property
@@ -147,15 +170,19 @@ try:
 except RuntimeError:
     pass
 
-names = ["Larry Fink", "Susan Wagner", "Robert Kapito"]
-dates = ["1952-11-02", "1961-05-26", "1957-02-08"]
+# Add birth dates for known individuals (this information might not be extractable from text)
+birth_dates = {
+    "Larry Fink": "1952-11-02",
+    "Susan Wagner": "1961-05-26",
+    "Robert Kapito": "1957-02-08"
+}
 
-for name, date in zip(names, dates):
+for name, date in birth_dates.items():
     conn.execute(
         """
-    MERGE (p:PERSON {id: $name})
-    ON MATCH SET p.birth_date = $date
-    """,
+        MERGE (p:PERSON {id: $name})
+        ON MATCH SET p.birth_date = $date
+        """,
         parameters={"name": name, "date": date},
     )
 
