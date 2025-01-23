@@ -2,7 +2,7 @@ import os
 
 import lancedb
 from dotenv import load_dotenv
-import ell
+from ell import ell
 from openai import OpenAI
 
 import prompts
