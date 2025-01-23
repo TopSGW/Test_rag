@@ -1,13 +1,11 @@
 import os
 import shutil
 import warnings
-from typing import Literal
 
 import kuzu
 import nest_asyncio
 from dotenv import load_dotenv
 from llama_index.core import PropertyGraphIndex, SimpleDirectoryReader, VectorStoreIndex
-from llama_index.core.indices.property_graph import SchemaLLMPathExtractor
 from llama_index.core.ingestion import IngestionPipeline
 from llama_index.core.node_parser import SentenceSplitter
 from llama_index.embeddings.ollama import OllamaEmbedding
@@ -77,44 +75,10 @@ db = kuzu.Database("test_kuzudb")
 
 warnings.filterwarnings("ignore")
 
-# Define the allowed entities and relationships
-entities = Literal["PERSON", "CITY", "STATE", "UNIVERSITY", "ORGANIZATION"]
-relations = Literal[
-    "STUDIED_AT",
-    "IS_FOUNDER_OF",
-    "IS_CEO_OF",
-    "BORN_IN",
-    "IS_CITY_IN",
-]
-
-validation_schema = [
-    ("PERSON", "STUDIED_AT", "UNIVERSITY"),
-    ("PERSON", "IS_CEO_OF", "ORGANIZATION"),
-    ("PERSON", "IS_FOUNDER_OF", "ORGANIZATION"),
-    ("PERSON", "BORN_IN", "CITY"),
-    ("CITY", "IS_CITY_IN", "STATE"),
-]
-
+# Initialize the graph store without schema validation
 graph_store = KuzuPropertyGraphStore(
     db,
-    has_structured_schema=True,
-    relationship_schema=validation_schema,
-)
-
-schema_path_extractor = SchemaLLMPathExtractor(
-    llm=extraction_llm,
-    possible_entities=entities,
-    possible_relations=relations,
-    kg_validation_schema=validation_schema,
-    strict=True,
-)
-
-kg_index = PropertyGraphIndex.from_documents(
-    original_documents,
-    embed_model=embed_model,
-    kg_extractors=[schema_path_extractor],
-    property_graph_store=graph_store,
-    show_progress=True,
+    has_structured_schema=False,  # Disable schema validation
 )
 
 # --- Step 3: Use EntityRelationshipExtractor to automatically extract entities and relationships ---
@@ -133,10 +97,19 @@ entities, relationships = extractor.process_documents(texts, show_progress=True)
 # Open a connection to the database to modify the graph
 conn = kuzu.Connection(db)
 
-# Add entities to the graph
+# Track created entity types to avoid duplicate table creation
+created_entity_types = set()
+
+# Create tables and add entities dynamically
 for entity in entities:
-    # Map the entity type to our schema's entity types
     entity_type = entity.type.upper()
+    
+    # Create table if it doesn't exist
+    if entity_type not in created_entity_types:
+        conn.execute(f"CREATE NODE TABLE IF NOT EXISTS {entity_type} (id STRING, name STRING, PRIMARY KEY (id))")
+        created_entity_types.add(entity_type)
+    
+    # Add entity
     conn.execute(
         f"""
         MERGE (e:{entity_type} {{id: $name, name: $name}})
@@ -144,14 +117,13 @@ for entity in entities:
         parameters={"name": entity.name},
     )
 
-# Add relationships to the graph
+# Add relationships
 for rel in relationships:
     source_type = rel.source.type.upper()
     target_type = rel.target.type.upper()
     relation_type = rel.relation_type.upper()
     
-    # Check if the relationship matches our schema
-    relationship_tuple = (source_type, relation_type, target_type)
+    # Create relationship if it doesn't exist
     conn.execute(
         f"""
         MATCH (s:{source_type} {{id: $source_name}})
@@ -164,13 +136,12 @@ for rel in relationships:
         },
     )
 
-# Alter PERSON schema and add a birth_date property
+# Add birth dates for known individuals (this information might not be extractable from text)
 try:
     conn.execute("ALTER TABLE PERSON ADD birth_date STRING")
 except RuntimeError:
     pass
 
-# Add birth dates for known individuals (this information might not be extractable from text)
 birth_dates = {
     "Larry Fink": "1952-11-02",
     "Susan Wagner": "1961-05-26",
