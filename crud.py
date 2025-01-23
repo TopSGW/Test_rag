@@ -1,6 +1,7 @@
 import os
 import shutil
 import warnings
+import re
 
 import kuzu
 import nest_asyncio
@@ -40,6 +41,17 @@ generation_llm = Ollama(
     request_timeout=120.0,
     base_url="http://localhost:11434"
 )
+
+def clean_table_name(name: str) -> str:
+    """Clean a string to be a valid table name."""
+    # Remove any characters that aren't alphanumeric or underscore
+    cleaned = re.sub(r'[^\w\s]', '', name)
+    # Replace spaces with underscores and convert to uppercase
+    cleaned = cleaned.replace(' ', '_').upper()
+    # Ensure it starts with a letter (prepend E_ if it doesn't)
+    if not cleaned[0].isalpha():
+        cleaned = 'E_' + cleaned
+    return cleaned
 
 # Load the dataset on Larry Fink
 original_documents = SimpleDirectoryReader("./data/blackrock").load_data()
@@ -97,48 +109,66 @@ entities, relationships = extractor.process_documents(texts, show_progress=True)
 # Open a connection to the database to modify the graph
 conn = kuzu.Connection(db)
 
-# Track created entity types to avoid duplicate table creation
+# Track created entity types and their mappings
 created_entity_types = set()
+entity_type_mapping = {}
 
 # Create tables and add entities dynamically
 for entity in entities:
-    entity_type = entity.type.upper()
+    original_type = entity.type.upper()
+    # Clean the entity type name for use as a table name
+    entity_type = clean_table_name(original_type)
+    entity_type_mapping[original_type] = entity_type
     
     # Create table if it doesn't exist
     if entity_type not in created_entity_types:
-        conn.execute(f"CREATE NODE TABLE IF NOT EXISTS {entity_type} (id STRING, name STRING, PRIMARY KEY (id))")
-        created_entity_types.add(entity_type)
+        try:
+            conn.execute(f"CREATE NODE TABLE IF NOT EXISTS {entity_type} (id STRING, name STRING, PRIMARY KEY (id))")
+            created_entity_types.add(entity_type)
+        except Exception as e:
+            print(f"Error creating table {entity_type}: {str(e)}")
+            continue
     
     # Add entity
-    conn.execute(
-        f"""
-        MERGE (e:{entity_type} {{id: $name, name: $name}})
-        """,
-        parameters={"name": entity.name},
-    )
+    try:
+        conn.execute(
+            f"""
+            MERGE (e:{entity_type} {{id: $name, name: $name}})
+            """,
+            parameters={"name": entity.name},
+        )
+    except Exception as e:
+        print(f"Error adding entity {entity.name}: {str(e)}")
 
 # Add relationships
 for rel in relationships:
-    source_type = rel.source.type.upper()
-    target_type = rel.target.type.upper()
-    relation_type = rel.relation_type.upper()
+    source_type = entity_type_mapping.get(rel.source.type.upper())
+    target_type = entity_type_mapping.get(rel.target.type.upper())
+    if not source_type or not target_type:
+        continue
     
-    # Create relationship if it doesn't exist
-    conn.execute(
-        f"""
-        MATCH (s:{source_type} {{id: $source_name}})
-        MATCH (t:{target_type} {{id: $target_name}})
-        MERGE (s)-[r:{relation_type}]->(t)
-        """,
-        parameters={
-            "source_name": rel.source.name,
-            "target_name": rel.target.name
-        },
-    )
+    # Clean the relationship type
+    relation_type = clean_table_name(rel.relation_type)
+    
+    try:
+        conn.execute(
+            f"""
+            MATCH (s:{source_type} {{id: $source_name}})
+            MATCH (t:{target_type} {{id: $target_name}})
+            MERGE (s)-[r:{relation_type}]->(t)
+            """,
+            parameters={
+                "source_name": rel.source.name,
+                "target_name": rel.target.name
+            },
+        )
+    except Exception as e:
+        print(f"Error adding relationship {rel.relation_type}: {str(e)}")
 
 # Add birth dates for known individuals (this information might not be extractable from text)
+person_type = entity_type_mapping.get('PERSON', 'PERSON')
 try:
-    conn.execute("ALTER TABLE PERSON ADD birth_date STRING")
+    conn.execute(f"ALTER TABLE {person_type} ADD birth_date STRING")
 except RuntimeError:
     pass
 
@@ -149,12 +179,15 @@ birth_dates = {
 }
 
 for name, date in birth_dates.items():
-    conn.execute(
-        """
-        MERGE (p:PERSON {id: $name})
-        ON MATCH SET p.birth_date = $date
-        """,
-        parameters={"name": name, "date": date},
-    )
+    try:
+        conn.execute(
+            f"""
+            MERGE (p:{person_type} {{id: $name}})
+            ON MATCH SET p.birth_date = $date
+            """,
+            parameters={"name": name, "date": date},
+        )
+    except Exception as e:
+        print(f"Error adding birth date for {name}: {str(e)}")
 
 conn.close()
