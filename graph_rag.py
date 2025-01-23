@@ -75,22 +75,26 @@ class GraphRAG:
 
     def query(self, question: str, cypher: str) -> str:
         """Use the generated Cypher statement to query the graph database."""
-        response = self.conn.execute(cypher)
-        result = []
-        while response.has_next():
-            item = response.get_next()
-            if item not in result:
-                result.extend(item)
+        try:
+            response = self.conn.execute(cypher)
+            result = []
+            while response.has_next():
+                item = response.get_next()
+                if isinstance(item, (list, tuple)):
+                    result.extend(item)
+                else:
+                    result.append(item)
 
-        # Handle both hashable and non-hashable types
-        if all(isinstance(x, (str, int, float, bool, tuple)) for x in result):
-            final_result = {question: list(set(result))}
-        else:
-            # For non-hashable types, we can't use set() directly
-            # Instead, we'll use a list comprehension to remove duplicates
-            final_result = {question: [x for i, x in enumerate(result) if x not in result[:i]]}
+            # Handle both hashable and non-hashable types
+            if all(isinstance(x, (str, int, float, bool, tuple)) for x in result):
+                final_result = {question: list(set(result))}
+            else:
+                # For non-hashable types, we'll use a list comprehension to remove duplicates
+                final_result = {question: [x for i, x in enumerate(result) if x not in result[:i]]}
 
-        return final_result
+            return final_result
+        except Exception as e:
+            return {question: f"Error executing query: {str(e)}"}
 
     @ell.simple(model=MODEL, temperature=0.1)
     def generate_cypher(self, question: str) -> str:
@@ -131,4 +135,4 @@ if __name__ == "__main__":
 
     question = "How did Larry Fink and Rob Kapito meet?"
     response = graph_rag.run(question)
-    print(f"---\nQ4: {question}\n\n{response}")
+    print(f"Q4: {question}\n\n{response}")
