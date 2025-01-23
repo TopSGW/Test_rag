@@ -4,6 +4,7 @@ import lancedb
 from dotenv import load_dotenv
 import ell
 from openai import OpenAI
+from llama_index.embeddings.ollama import OllamaEmbedding
 
 import prompts
 
@@ -11,12 +12,16 @@ load_dotenv()
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 SEED = 42
 
-# Configure OpenAI client for embeddings
-embedding_client = OpenAI(api_key=OPENAI_API_KEY)
+# Configure Ollama embedding model
+embed_model = OllamaEmbedding(
+    model_name="llama3.3:70b",
+    base_url="http://localhost:11434",
+    ollama_additional_kwargs={"mirostat": 0},
+)
 
 # Configure OpenAI client for Ollama
 llm_client = OpenAI(
-    base_url="http://localhost:11434",
+    base_url="http://localhost:11434/v1",
     api_key="ollama",  # Ollama doesn't need a real API key
 )
 
@@ -28,7 +33,7 @@ ell.config.register_model(MODEL, llm_client)
 class VectorRAG:
     def __init__(self, db_path: str, table_name: str = "vectors"):
         load_dotenv()
-        self.embedding_client = embedding_client
+        self.embed_model = embed_model
         self.db = lancedb.connect(db_path)
         self.table = self.db.open_table(table_name)
 
@@ -39,9 +44,9 @@ class VectorRAG:
         return search_result if search_result else None
 
     def embed(self, query: str) -> list:
-        # For now just using an OpenAI embedding model
-        response = self.embedding_client.embeddings.create(model="text-embedding-3-small", input=query)
-        return response.data[0].embedding
+        # Using Ollama embedding model
+        embedding = self.embed_model.get_text_embedding(query)
+        return embedding
 
     @ell.simple(model=MODEL, temperature=0.3)
     def retrieve(self, question: str, context: str) -> str:
