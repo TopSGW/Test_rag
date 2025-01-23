@@ -2,7 +2,7 @@ import os
 
 import cohere
 from dotenv import load_dotenv
-from ell import ell
+import ell
 from openai import OpenAI
 
 import prompts
@@ -10,9 +10,18 @@ from graph_rag import GraphRAG
 from vector_rag import VectorRAG
 
 load_dotenv()
-MODEL_NAME = "gpt-4o-mini"
 COHERE_API_KEY = os.environ.get("COHERE_API_KEY")
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
+
+# Configure OpenAI client for Ollama
+client = OpenAI(
+    base_url="http://localhost:11434/v1",
+    api_key="ollama",  # Ollama doesn't need a real API key
+)
+
+# Register the model with Ellama
+MODEL = "llama3.3:70b"
+ell.config.register_model(MODEL, client)
+
 SEED = 42
 
 
@@ -26,7 +35,7 @@ class HybridRAG:
         self.vector_rag = VectorRAG(vector_db_path)
         self.co = cohere.ClientV2(COHERE_API_KEY)
 
-    @ell.simple(model=MODEL_NAME, temperature=0.3, client=OpenAI(api_key=OPENAI_API_KEY), seed=SEED)
+    @ell.simple(model=MODEL, temperature=0.3)
     def hybrid_rag(self, question: str, context: str) -> str:
         return [
             ell.system(prompts.RAG_SYSTEM_PROMPT),

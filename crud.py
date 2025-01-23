@@ -5,41 +5,48 @@ from typing import Literal
 
 import kuzu
 import nest_asyncio
-import openai
 from dotenv import load_dotenv
 from llama_index.core import PropertyGraphIndex, SimpleDirectoryReader, VectorStoreIndex
 from llama_index.core.indices.property_graph import SchemaLLMPathExtractor
 from llama_index.core.ingestion import IngestionPipeline
 from llama_index.core.node_parser import SentenceSplitter
-from llama_index.embeddings.openai import OpenAIEmbedding
+from llama_index.embeddings.ollama import OllamaEmbedding
 from llama_index.graph_stores.kuzu import KuzuPropertyGraphStore
-from llama_index.llms.openai import OpenAI
 from llama_index.vector_stores.lancedb import LanceDBVectorStore
+from llama_index.llms.ollama import Ollama
 
 # Load environment variables
 load_dotenv()
 SEED = 42
 nest_asyncio.apply()
 
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
-COHERE_API_KEY = os.environ.get("COHERE_API_KEY")
+# Set up the embedding model using Ollama
+embed_model = OllamaEmbedding(
+    model_name="llama3.3:70b",
+    base_url="http://localhost:11434",
+    ollama_additional_kwargs={"mirostat": 0},
+)
 
-assert OPENAI_API_KEY is not None, "OPENAI_API_KEY is not set"
-assert COHERE_API_KEY is not None, "COHERE_API_KEY is not set"
+# Configure Ollama LLMs
+extraction_llm = Ollama(
+    model="llama3.3:70b",
+    temperature=0.0,
+    request_timeout=120.0,
+    base_url="http://localhost:11434"
+)
 
-# Set up the embedding model and LLM
-embed_model = OpenAIEmbedding(model_name="text-embedding-3-small")
-extraction_llm = OpenAI(model="gpt-4o-mini", temperature=0.0, seed=SEED)
-generation_llm = OpenAI(model="gpt-4o-mini", temperature=0.3, seed=SEED)
+generation_llm = Ollama(
+    model="llama3.3:70b",
+    temperature=0.3,
+    request_timeout=120.0,
+    base_url="http://localhost:11434"
+)
 
 # Load the dataset on Larry Fink
 original_documents = SimpleDirectoryReader("./data/blackrock").load_data()
-# print(len(original_documents))
 
 # --- Step 1: Chunk and store the vector embeddings in LanceDB ---
 shutil.rmtree("./test_lancedb", ignore_errors=True)
-
-openai.api_key = OPENAI_API_KEY
 
 vector_store = LanceDBVectorStore(
     uri="./test_lancedb",
@@ -49,7 +56,7 @@ vector_store = LanceDBVectorStore(
 pipeline = IngestionPipeline(
     transformations=[
         SentenceSplitter(chunk_size=1024, chunk_overlap=32),
-        OpenAIEmbedding(),
+        embed_model,
     ],
     vector_store=vector_store,
 )
@@ -58,8 +65,8 @@ pipeline.run(documents=original_documents)
 # Create the vector index
 vector_index = VectorStoreIndex.from_vector_store(
     vector_store,
-    embed_model=OpenAIEmbedding(model_name="text-embedding-3-small"),
-    llm=OpenAI(model="gpt-4o-mini", temperature=0.3, seed=SEED),
+    embed_model=embed_model,
+    llm=generation_llm,
 )
 
 # --- Step 2: Construct the graph in KùzuDB ---

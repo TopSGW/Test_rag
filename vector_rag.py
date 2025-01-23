@@ -2,21 +2,33 @@ import os
 
 import lancedb
 from dotenv import load_dotenv
-from ell import ell
+import ell
 from openai import OpenAI
 
 import prompts
 
 load_dotenv()
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
-MODEL_NAME = "gpt-4o-mini"
 SEED = 42
+
+# Configure OpenAI client for embeddings
+embedding_client = OpenAI(api_key=OPENAI_API_KEY)
+
+# Configure OpenAI client for Ollama
+llm_client = OpenAI(
+    base_url="http://localhost:11434/v1",
+    api_key="ollama",  # Ollama doesn't need a real API key
+)
+
+# Register the model with Ellama
+MODEL = "llama3.3:70b"
+ell.config.register_model(MODEL, llm_client)
 
 
 class VectorRAG:
     def __init__(self, db_path: str, table_name: str = "vectors"):
         load_dotenv()
-        self.openai_client = OpenAI(api_key=OPENAI_API_KEY)
+        self.embedding_client = embedding_client
         self.db = lancedb.connect(db_path)
         self.table = self.db.open_table(table_name)
 
@@ -28,10 +40,10 @@ class VectorRAG:
 
     def embed(self, query: str) -> list:
         # For now just using an OpenAI embedding model
-        response = self.openai_client.embeddings.create(model="text-embedding-3-small", input=query)
+        response = self.embedding_client.embeddings.create(model="text-embedding-3-small", input=query)
         return response.data[0].embedding
 
-    @ell.simple(model=MODEL_NAME, temperature=0.3, client=OpenAI(api_key=OPENAI_API_KEY), seed=SEED)
+    @ell.simple(model=MODEL, temperature=0.3)
     def retrieve(self, question: str, context: str) -> str:
         return [
             ell.system(prompts.RAG_SYSTEM_PROMPT),

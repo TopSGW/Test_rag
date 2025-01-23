@@ -2,15 +2,23 @@ import os
 
 import kuzu
 from dotenv import load_dotenv
-from ell import ell
+import ell
 from openai import OpenAI
 
 import prompts
 
 load_dotenv()
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
-MODEL_NAME = "gpt-4o-mini"
 SEED = 42
+
+# Configure OpenAI client for Ollama
+client = OpenAI(
+    base_url="http://localhost:11434/v1",
+    api_key="ollama",  # Ollama doesn't need a real API key
+)
+
+# Register the model with Ellama
+MODEL = "llama3.3:70b"
+ell.config.register_model(MODEL, client)
 
 
 class GraphRAG:
@@ -84,7 +92,7 @@ class GraphRAG:
 
         return final_result
 
-    @ell.simple(model=MODEL_NAME, temperature=0.1, client=OpenAI(api_key=OPENAI_API_KEY), seed=SEED)
+    @ell.simple(model=MODEL, temperature=0.1)
     def generate_cypher(self, question: str) -> str:
         return [
             ell.system(prompts.CYPHER_SYSTEM_PROMPT),
@@ -93,7 +101,7 @@ class GraphRAG:
             ),
         ]
 
-    @ell.simple(model=MODEL_NAME, temperature=0.3, client=OpenAI(api_key=OPENAI_API_KEY), seed=SEED)
+    @ell.simple(model=MODEL, temperature=0.3)
     def retrieve(self, question: str, context: str) -> str:
         return [
             ell.system(prompts.RAG_SYSTEM_PROMPT),
