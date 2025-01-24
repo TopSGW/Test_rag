@@ -31,8 +31,7 @@ embed_model = OllamaEmbedding(
 
 def get_relationship_embedding(rel_type: str) -> np.ndarray:
     """Generate embedding for a relationship type."""
-    # Create a descriptive text that captures the semantic meaning of the relationship
-    rel_text = f"This represents a {rel_type} relationship between two entities"
+    rel_text = f"This represents a {rel_type} relationship between entities"
     embedding = embed_model.get_text_embedding(rel_text)
     return np.array(embedding)
 
@@ -71,7 +70,7 @@ class GraphRAG:
             rel_tables = self.conn._get_rel_table_names()
             for table in rel_tables:
                 # Format the relationship pattern using source_name and target_name
-                relationships.append("(:%s)-[:%s {embedding: FLOAT[]}]->(:%s)" % (table["src"], table["name"], table["dst"]))
+                relationships.append("(:%s)-[:%s {embedding: VAR_LIST<FLOAT>, description: STRING}]->(:%s)" % (table["src"], table["name"], table["dst"]))
                 print(f"source:{table['src']} type::{table['name']}, target::{table['dst']}")
 
             # Get relationship properties
@@ -100,8 +99,8 @@ class GraphRAG:
             # Add relationship patterns with vector similarity support
             if relationships:
                 schema_parts.append("\nValid relationship patterns:")
-                schema_parts.append("Note: All relationships support vector similarity matching for semantic equivalence.")
-                schema_parts.append("This means you can find semantically similar relationships regardless of their exact names.")
+                schema_parts.append("Note: All relationships support vector similarity matching using dot product.")
+                schema_parts.append("Relationships store embeddings as VAR_LIST<FLOAT> for semantic similarity search.")
                 for rel in relationships:
                     schema_parts.append(f"  {rel}")
 
@@ -120,11 +119,22 @@ class GraphRAG:
             schema += "\n- Use MATCH to find patterns in the graph"
             schema += "\n- Properties can be accessed using dot notation (node.property)"
             schema += "\n- Relationships are directional, use -> for direction"
-            schema += "\n- For finding semantically similar relationships, use vector_similarity() function"
+            schema += "\n- For finding semantically similar relationships, use vector dot product:"
             schema += "\n  Example: MATCH (a)-[r]->(b)"
-            schema += "\n          WITH vector_similarity(r.embedding, $rel_embedding) AS sim"
-            schema += "\n          WHERE sim > $threshold"
-            schema += "\n          RETURN a.name, type(r), b.name, sim"
+            schema += "\n          WITH r.description AS desc,"
+            schema += "\n               r.embedding AS emb,"
+            schema += "\n               $rel_embedding AS test_emb"
+            schema += "\n          WHERE emb IS NOT NULL"
+            schema += "\n          WITH desc,"
+            schema += "\n               reduce(dot = 0.0, i IN RANGE(0, size(emb)-1) |"
+            schema += "\n                  dot + emb[i] * test_emb[i]) /"
+            schema += "\n               (sqrt(reduce(norm1 = 0.0, i IN RANGE(0, size(emb)-1) |"
+            schema += "\n                  norm1 + emb[i] * emb[i])) *"
+            schema += "\n                sqrt(reduce(norm2 = 0.0, i IN RANGE(0, size(test_emb)-1) |"
+            schema += "\n                  norm2 + test_emb[i] * test_emb[i]))) AS similarity"
+            schema += "\n          WHERE similarity > $threshold"
+            schema += "\n          RETURN desc, similarity"
+            schema += "\n          ORDER BY similarity DESC"
             
             return schema
 
@@ -135,10 +145,8 @@ class GraphRAG:
     def query(self, question: str, cypher: str) -> str:
         """Use the generated Cypher statement to query the graph database."""
         try:
-            # Extract key relationship terms from the question
-            words = question.lower().split()
             # Generate embedding for the relationship implied by the question
-            rel_embedding = get_relationship_embedding(" ".join(words)).tolist()
+            rel_embedding = get_relationship_embedding(question).tolist()
             
             # Execute query with relationship embedding for semantic matching
             response = self.conn.execute(

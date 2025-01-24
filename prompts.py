@@ -18,15 +18,61 @@ Important Kuzu-specific rules:
 3. Avoid Neo4j-specific functions that aren't supported in Kuzu
 4. For collecting results, use COLLECT() function
 5. For filtering, use WHERE clauses with standard comparison operators
-6. Use vector_similarity() for finding semantically similar relationships
-7. Always include the similarity score in relationship matches to find semantically equivalent relationships
+6. For relationship similarity, use vector dot product with VAR_LIST<FLOAT> embeddings
 
-Example patterns for semantic relationship matching:
+Vector Similarity Search Pattern:
 MATCH (a)-[r]->(b)
-WITH vector_similarity(r.embedding, $rel_embedding) AS sim
-WHERE sim > $threshold
-RETURN a.name, type(r), b.name, sim
-ORDER BY sim DESC
+WITH r.description AS desc,
+     r.embedding AS emb,
+     $rel_embedding AS test_emb
+WHERE emb IS NOT NULL
+WITH desc,
+     reduce(dot = 0.0, i IN RANGE(0, size(emb)-1) |
+        dot + emb[i] * test_emb[i]) /
+     (sqrt(reduce(norm1 = 0.0, i IN RANGE(0, size(emb)-1) |
+        norm1 + emb[i] * emb[i])) *
+      sqrt(reduce(norm2 = 0.0, i IN RANGE(0, size(test_emb)-1) |
+        norm2 + test_emb[i] * test_emb[i]))) AS similarity
+WHERE similarity > $threshold
+RETURN desc, similarity
+ORDER BY similarity DESC
+
+Example Queries:
+
+1. Find semantically similar relationships:
+MATCH (p:PERSON)-[r]->(o:ORGANIZATION)
+WITH r.description AS desc,
+     r.embedding AS emb,
+     $rel_embedding AS test_emb
+WHERE emb IS NOT NULL
+WITH desc,
+     reduce(dot = 0.0, i IN RANGE(0, size(emb)-1) |
+        dot + emb[i] * test_emb[i]) /
+     (sqrt(reduce(norm1 = 0.0, i IN RANGE(0, size(emb)-1) |
+        norm1 + emb[i] * emb[i])) *
+      sqrt(reduce(norm2 = 0.0, i IN RANGE(0, size(test_emb)-1) |
+        norm2 + test_emb[i] * test_emb[i]))) AS similarity
+WHERE similarity > $threshold
+RETURN p.name, desc, o.name, similarity
+ORDER BY similarity DESC
+
+2. Find relationships with specific entities and similar meaning:
+MATCH (p:PERSON)-[r]->(o:ORGANIZATION)
+WHERE p.name = 'Larry Fink'
+WITH r.description AS desc,
+     r.embedding AS emb,
+     $rel_embedding AS test_emb
+WHERE emb IS NOT NULL
+WITH desc,
+     reduce(dot = 0.0, i IN RANGE(0, size(emb)-1) |
+        dot + emb[i] * test_emb[i]) /
+     (sqrt(reduce(norm1 = 0.0, i IN RANGE(0, size(emb)-1) |
+        norm1 + emb[i] * emb[i])) *
+      sqrt(reduce(norm2 = 0.0, i IN RANGE(0, size(test_emb)-1) |
+        norm2 + test_emb[i] * test_emb[i]))) AS similarity
+WHERE similarity > $threshold
+RETURN desc, similarity
+ORDER BY similarity DESC
 
 Do not include any explanations or apologies in your responses.
 Do not respond to any questions that might ask anything else than for you to construct a Cypher statement.
@@ -62,8 +108,11 @@ Generate the Kùzu dialect of Cypher with the following rules in mind:
    - Specify relationship direction with -> or <-
    - Use variable length paths with [*min..max]
 5. Use WHERE clauses for filtering instead of complex functions
-6. Always use vector_similarity() to find semantically similar relationships:
-   - Include the similarity score in the results
-   - Use the provided $rel_embedding parameter for matching
-   - Filter results using the $threshold parameter
+6. For finding semantically similar relationships:
+   - Use vector dot product with VAR_LIST<FLOAT> embeddings
+   - Include similarity score in results
+   - Use $rel_embedding parameter for matching
+   - Filter results using $threshold parameter
+   - Order results by similarity score
+7. Always include relationship descriptions in the output for better context
 """
