@@ -8,6 +8,7 @@ import hashlib
 import json
 from pathlib import Path
 import subprocess
+import re
 
 
 @dataclass
@@ -21,6 +22,35 @@ class Entity:
     start_char: int
     end_char: int
     text: str
+
+    def __post_init__(self):
+        # Clean the name and type
+        self.name = self._clean_entity_name(self.name)
+        self.type = self._clean_entity_type(self.type)
+
+    def _clean_entity_name(self, name: str) -> str:
+        # Remove any notes in parentheses and extra whitespace
+        name = re.sub(r'\s*\([^)]*\)', '', name)
+        return name.strip()
+
+    def _clean_entity_type(self, type_str: str) -> str:
+        # Remove any notes in parentheses
+        type_str = re.sub(r'\s*\([^)]*\)', '', type_str)
+        # Standardize common type names
+        type_map = {
+            'PERSON': ['PERSON', 'INDIVIDUAL', 'PEOPLE'],
+            'ORGANIZATION': ['ORGANIZATION', 'COMPANY', 'CORPORATION', 'INSTITUTION'],
+            'LOCATION': ['LOCATION', 'PLACE', 'CITY', 'STATE', 'COUNTRY'],
+            'DATE': ['DATE', 'TIME', 'YEAR'],
+            'DEGREE': ['DEGREE', 'QUALIFICATION', 'EDUCATION'],
+            'MONETARY_VALUE': ['MONETARY_VALUE', 'MONEY', 'CURRENCY']
+        }
+        
+        type_str = type_str.upper().strip()
+        for standard_type, variants in type_map.items():
+            if type_str in variants:
+                return standard_type
+        return type_str
 
     def __hash__(self):
         # Use MD5 hashing of the (lower-cased) name and type to ensure uniqueness
@@ -44,6 +74,29 @@ class Relationship:
     source: Entity
     target: Entity
     relation_type: str
+
+    def __post_init__(self):
+        # Standardize relationship type
+        self.relation_type = self._standardize_relation_type(self.relation_type)
+
+    def _standardize_relation_type(self, rel_type: str) -> str:
+        # Remove any notes in parentheses and convert to uppercase
+        rel_type = re.sub(r'\s*\([^)]*\)', '', rel_type)
+        rel_type = rel_type.upper().strip()
+        
+        # Standardize common relationship types
+        relation_map = {
+            'FOUNDED': ['FOUNDED', 'ESTABLISHED', 'CREATED', 'STARTED'],
+            'WORKS_AT': ['WORKS_AT', 'EMPLOYED_BY', 'WORKS_FOR'],
+            'STUDIED_AT': ['STUDIED_AT', 'ATTENDED', 'GRADUATED_FROM'],
+            'BORN_IN': ['BORN_IN', 'BIRTHPLACE'],
+            'LOCATED_IN': ['LOCATED_IN', 'BASED_IN', 'SITUATED_IN']
+        }
+        
+        for standard_rel, variants in relation_map.items():
+            if rel_type in variants:
+                return standard_rel
+        return rel_type
 
     def __hash__(self):
         return int(
@@ -144,6 +197,28 @@ class EntityRelationshipExtractor:
             return -1, -1
         return idx, idx + len(entity_name)
 
+    def _find_matching_entity(self, name: str, type_hint: str, entities: List[Entity]) -> Optional[Entity]:
+        """Find a matching entity with fuzzy name matching."""
+        name = name.lower().strip()
+        # First try exact match
+        for entity in entities:
+            if entity.name.lower().strip() == name:
+                return entity
+        
+        # Try partial matches
+        for entity in entities:
+            if name in entity.name.lower() or entity.name.lower() in name:
+                return entity
+        
+        # Try matching by type if provided
+        if type_hint:
+            type_hint = type_hint.upper().strip()
+            for entity in entities:
+                if entity.type == type_hint and (name in entity.name.lower() or entity.name.lower() in name):
+                    return entity
+        
+        return None
+
     def extract_entities(self, text: str) -> List[Entity]:
         """
         Main method for entity extraction with only the LLM. 
@@ -161,7 +236,7 @@ class EntityRelationshipExtractor:
                 return [Entity(**entity_data) for entity_data in cached_result['entities']]
 
         prompt = f"""You are an NLP system. Extract ALL named entities from the text below.
-For each entity, provide a short descriptive type.
+For each entity, provide a short descriptive type (PERSON, ORGANIZATION, LOCATION, DATE, etc.).
 Return each in the format:
 
 entity_name|entity_type
@@ -173,6 +248,8 @@ Text:
         lines = response.text.strip().split('\n')
 
         extracted_entities = []
+        seen_entities = set()  # Track unique entities
+
         for line in lines:
             if '|' not in line:
                 continue
@@ -181,19 +258,32 @@ Text:
                 continue
             name, entity_type = [p.strip() for p in parts]
 
-            # Attempt naive span detection
-            start_char, end_char = self._find_entity_span(name, text)
-            snippet = text[start_char:end_char] if (start_char != -1) else name
-
-            extracted_entities.append(
-                Entity(
-                    name=name,
-                    type=entity_type,
-                    start_char=start_char,
-                    end_char=end_char,
-                    text=snippet
-                )
+            # Create entity and let post_init clean the name and type
+            entity = Entity(
+                name=name,
+                type=entity_type,
+                start_char=-1,
+                end_char=-1,
+                text=name
             )
+
+            # Only add if we haven't seen this entity before
+            entity_key = (entity.name.lower(), entity.type)
+            if entity_key not in seen_entities:
+                # Try to find the span in the text
+                start_char, end_char = self._find_entity_span(entity.name, text)
+                if start_char != -1:
+                    entity.start_char = start_char
+                    entity.end_char = end_char
+                    entity.text = text[start_char:end_char]
+
+                extracted_entities.append(entity)
+                seen_entities.add(entity_key)
+
+        if self.debug:
+            print(f"\nExtracted {len(extracted_entities)} unique entities:")
+            for entity in extracted_entities:
+                print(f"  - {entity}")
 
         # Cache the final result
         if self.cache:
@@ -223,20 +313,18 @@ Text:
 
         text_hash = self._get_text_hash(text)
         if self.cache:
-            print("chache >>>>>>")
             cached_result = self.cache.get(text_hash)
             if cached_result and 'relationships' in cached_result:
                 # Rebuild Relationship objects from cache
                 relationships = []
-                # Rebuild quick lookup by name+type
-                ent_map = {(e.name.strip().lower(), e.type.lower()): e for e in entities}
                 for rel_data in cached_result['relationships']:
-                    source_key = (rel_data['source'].strip().lower(), rel_data['source_type'].strip().lower())
-                    target_key = (rel_data['target'].strip().lower(), rel_data['target_type'].strip().lower())
-                    if source_key in ent_map and target_key in ent_map:
+                    source = self._find_matching_entity(rel_data['source'], rel_data['source_type'], entities)
+                    target = self._find_matching_entity(rel_data['target'], rel_data['target_type'], entities)
+                    
+                    if source and target:
                         rel = Relationship(
-                            source=ent_map[source_key],
-                            target=ent_map[target_key],
+                            source=source,
+                            target=target,
                             relation_type=rel_data['relation_type']
                         )
                         relationships.append(rel)
@@ -291,20 +379,15 @@ Return only the relationships, one per line:
             
             source_name, rel_type, target_name = [p.strip() for p in parts]
 
-            # Find matching Entities
-            source_entity = None
-            target_entity = None
-            for ent in entities:
-                if ent.name.strip().lower() == source_name.lower():
-                    source_entity = ent
-                if ent.name.strip().lower() == target_name.lower():
-                    target_entity = ent
+            # Find matching Entities using fuzzy matching
+            source_entity = self._find_matching_entity(source_name, "", entities)
+            target_entity = self._find_matching_entity(target_name, "", entities)
 
             if source_entity and target_entity:
                 rel = Relationship(
                     source=source_entity,
                     target=target_entity,
-                    relation_type=rel_type.upper()
+                    relation_type=rel_type
                 )
                 found_relationships.append(rel)
                 if self.debug:
@@ -316,6 +399,11 @@ Return only the relationships, one per line:
                         print(f"Missing source entity: {source_name}")
                     if not target_entity:
                         print(f"Missing target entity: {target_name}")
+
+        if self.debug:
+            print(f"\nExtracted {len(found_relationships)} relationships:")
+            for rel in found_relationships:
+                print(f"  - {rel}")
 
         if self.cache:
             self.cache.set(text_hash, {
@@ -349,15 +437,9 @@ Return only the relationships, one per line:
             try:
                 entities = self.extract_entities(text)
                 if self.debug:
-                    print(f"\nExtracted {len(entities)} entities from text:")
-                    for entity in entities:
-                        print(f"  - {entity}")
+                    print(f"\nProcessing text of length {len(text)} characters")
 
                 relationships = self.extract_relationships(text, entities)
-                if self.debug:
-                    print(f"\nExtracted {len(relationships)} relationships:")
-                    for rel in relationships:
-                        print(f"  - {rel}")
 
                 # Collect them in our global store
                 for entity in entities:
