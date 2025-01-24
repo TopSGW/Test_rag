@@ -335,8 +335,8 @@ Text:
         # Build a prompt listing the entities
         entities_list_str = "\n".join(f" - {e.name} ({e.type})" for e in entities)
         prompt = f"""You are an NLP system that performs relationship extraction from text.
-Your task is to identify meaningful relationships between the entities listed below.
-Focus on factual relationships that are explicitly mentioned or strongly implied in the text.
+Your task is to identify relationships between the entities listed below.
+Please find all explicit and implicit relationships. 
 
 Entities:
 {entities_list_str}
