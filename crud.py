@@ -151,11 +151,12 @@ for rel in relationships:
     relation_type = clean_table_name(rel.relation_type)
     
     try:
+        # Create relationship using source_name and target_name
         conn.execute(
             f"""
-            MATCH (s:{source_type} {{id: $source_name}})
-            MATCH (t:{target_type} {{id: $target_name}})
-            MERGE (s)-[r:{relation_type}]->(t)
+            MATCH (source:{source_type} {{id: $source_name}})
+            MATCH (target:{target_type} {{id: $target_name}})
+            MERGE (source)-[r:{relation_type}]->(target)
             """,
             parameters={
                 "source_name": rel.source.name,
