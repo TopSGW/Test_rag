@@ -187,6 +187,7 @@ Text:
                     text=snippet
                 )
             )
+            print(f"Entity: name:{name} type: {entity_type} start_char={start_char}, text={snippet}")
 
         # Cache the final result
         if self.cache:
@@ -231,6 +232,7 @@ Text:
                                 relation_type=rel_data['relation_type']
                             )
                         )
+                        print(f"source::{ent_map[source_key]}-> relation_type::{rel_data['relation_type']} -> target::{ent_map[target_key]}")
                 return relationships
 
         # Build a prompt listing the entities

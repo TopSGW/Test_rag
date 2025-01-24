@@ -57,7 +57,7 @@ class GraphRAG:
             for table in rel_tables:
                 # Format the relationship pattern using source_name and target_name
                 relationships.append("(:%s)-[:%s]->(:%s)" % (table["src"], table["name"], table["dst"]))
-                print(f"(:%s)-[:%s]->(:%s)" % (table["src"], table["name"], table["dst"]))
+                print(f"source:{table["src"]} type::{table["name"]}, target::{table["dst"]}") 
 
             # Get relationship properties
             rel_properties = []
