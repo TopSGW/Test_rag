@@ -31,6 +31,9 @@ class Entity:
             return False
         return self.name.lower() == other.name.lower() and self.type == other.type
 
+    def __str__(self):
+        return f"{self.name} ({self.type})"
+
 
 @dataclass
 class Relationship:
@@ -58,6 +61,9 @@ class Relationship:
             and self.target == other.target 
             and self.relation_type == other.relation_type
         )
+
+    def __str__(self):
+        return f"{self.source.name} --[{self.relation_type}]--> {self.target.name}"
 
 
 class EntityCache:
@@ -99,10 +105,12 @@ class EntityRelationshipExtractor:
         llm_model: str = "llama3.3:70b",
         base_url: str = "http://localhost:11434",
         batch_size: int = 5,
-        cache_enabled: bool = True
+        cache_enabled: bool = True,
+        debug: bool = True
     ):
         self.batch_size = batch_size
         self.cache = EntityCache() if cache_enabled else None
+        self.debug = debug
 
         # LLM for entity and relationship extraction
         self.llm = Ollama(
@@ -126,10 +134,9 @@ class EntityRelationshipExtractor:
 
     def _find_entity_span(self, entity_name: str, text: str) -> Tuple[int, int]:
         """
-        Naive method: find the first occurrence of entity_name in text
+        Find the first occurrence of entity_name in text
         and return (start_char, end_char). If not found, returns (-1, -1).
         """
-        # You could remove this if you don't need positions.
         lower_text = text.lower()
         lower_entity = entity_name.lower()
         idx = lower_text.find(lower_entity)
@@ -187,7 +194,6 @@ Text:
                     text=snippet
                 )
             )
-            print(f"Entity: name:{name} type: {entity_type} start_char={start_char}, text={snippet}")
 
         # Cache the final result
         if self.cache:
@@ -211,10 +217,13 @@ Text:
         Extract relationships among entities using the LLM only.
         """
         if len(entities) < 2:
+            if self.debug:
+                print("Not enough entities to extract relationships")
             return []
 
         text_hash = self._get_text_hash(text)
         if self.cache:
+            print("chache >>>>>>")
             cached_result = self.cache.get(text_hash)
             if cached_result and 'relationships' in cached_result:
                 # Rebuild Relationship objects from cache
@@ -225,39 +234,61 @@ Text:
                     source_key = (rel_data['source'].strip().lower(), rel_data['source_type'].strip().lower())
                     target_key = (rel_data['target'].strip().lower(), rel_data['target_type'].strip().lower())
                     if source_key in ent_map and target_key in ent_map:
-                        relationships.append(
-                            Relationship(
-                                source=ent_map[source_key],
-                                target=ent_map[target_key],
-                                relation_type=rel_data['relation_type']
-                            )
+                        rel = Relationship(
+                            source=ent_map[source_key],
+                            target=ent_map[target_key],
+                            relation_type=rel_data['relation_type']
                         )
-                        print(f"source::{ent_map[source_key]}-> relation_type::{rel_data['relation_type']} -> target::{ent_map[target_key]}")
+                        relationships.append(rel)
+                        if self.debug:
+                            print(f"Found cached relationship: {rel}")
                 return relationships
 
         # Build a prompt listing the entities
         entities_list_str = "\n".join(f" - {e.name} ({e.type})" for e in entities)
         prompt = f"""You are an NLP system that performs relationship extraction from text.
-Identify all possible relationships between these entities:
+Your task is to identify meaningful relationships between the entities listed below.
+Focus on factual relationships that are explicitly mentioned or strongly implied in the text.
 
+Entities:
 {entities_list_str}
 
 Text:
 {text}
 
-Return each relationship in the format:
-source_entity|relationship_type|target_entity
+Instructions:
+1. Analyze the text carefully to find relationships between the listed entities.
+2. Only extract relationships that are supported by the text.
+3. Use clear and consistent relationship types (e.g., FOUNDED, WORKS_AT, STUDIED_AT, BORN_IN).
+4. Return each relationship in the format: source_entity|relationship_type|target_entity
+
+Example formats:
+John Smith|FOUNDED|Tech Corp
+Jane Doe|WORKS_AT|Tech Corp
+John Smith|GRADUATED_FROM|Harvard University
+
+Return only the relationships, one per line:
 """
         response = self.llm.complete(prompt)
         lines = response.text.strip().split('\n')
 
+        if self.debug:
+            print("\nLLM Response for relationships:")
+            print(response.text.strip())
+
         found_relationships = []
         for line in lines:
             if '|' not in line:
+                if self.debug:
+                    print(f"Skipping invalid line (no delimiter): {line}")
                 continue
+            
             parts = line.split('|')
             if len(parts) != 3:
+                if self.debug:
+                    print(f"Skipping invalid line (wrong number of parts): {line}")
                 continue
+            
             source_name, rel_type, target_name = [p.strip() for p in parts]
 
             # Find matching Entities
@@ -270,11 +301,21 @@ source_entity|relationship_type|target_entity
                     target_entity = ent
 
             if source_entity and target_entity:
-                found_relationships.append(Relationship(
+                rel = Relationship(
                     source=source_entity,
                     target=target_entity,
-                    relation_type=rel_type
-                ))
+                    relation_type=rel_type.upper()
+                )
+                found_relationships.append(rel)
+                if self.debug:
+                    print(f"Found relationship: {rel}")
+            else:
+                if self.debug:
+                    print(f"Could not find entities for relationship: {line}")
+                    if not source_entity:
+                        print(f"Missing source entity: {source_name}")
+                    if not target_entity:
+                        print(f"Missing target entity: {target_name}")
 
         if self.cache:
             self.cache.set(text_hash, {
@@ -305,15 +346,29 @@ source_entity|relationship_type|target_entity
             texts = tqdm(texts, desc="Processing documents")
 
         for text in texts:
-            entities = self.extract_entities(text)
-            relationships = self.extract_relationships(text, entities)
+            try:
+                entities = self.extract_entities(text)
+                if self.debug:
+                    print(f"\nExtracted {len(entities)} entities from text:")
+                    for entity in entities:
+                        print(f"  - {entity}")
 
-            # Collect them in our global store
-            for entity in entities:
-                self.entities_by_type[entity.type].add(entity)
+                relationships = self.extract_relationships(text, entities)
+                if self.debug:
+                    print(f"\nExtracted {len(relationships)} relationships:")
+                    for rel in relationships:
+                        print(f"  - {rel}")
 
-            for rel in relationships:
-                self.relationships.add(rel)
+                # Collect them in our global store
+                for entity in entities:
+                    self.entities_by_type[entity.type].add(entity)
+
+                for rel in relationships:
+                    self.relationships.add(rel)
+
+            except Exception as e:
+                print(f"Error processing text: {str(e)}")
+                continue
 
         # Combine all entities from the dictionary into a single set
         all_entities = {
