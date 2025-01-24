@@ -153,7 +153,7 @@ for rel in relationships:
     try:
         # Create relationship using source_name and target_name
         conn.execute(
-            f"""
+            """
             MATCH (source:{source_type} {{id: $source_name}})
             MATCH (target:{target_type} {{id: $target_name}})
             MERGE (source)-[r:{relation_type}]->(target)
