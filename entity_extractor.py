@@ -84,18 +84,13 @@ class Relationship:
         rel_type = re.sub(r'\s*\([^)]*\)', '', rel_type)
         rel_type = rel_type.upper().strip()
         
-        # Standardize common relationship types
-        relation_map = {
-            'FOUNDED': ['FOUNDED', 'ESTABLISHED', 'CREATED', 'STARTED'],
-            'WORKS_AT': ['WORKS_AT', 'EMPLOYED_BY', 'WORKS_FOR'],
-            'STUDIED_AT': ['STUDIED_AT', 'ATTENDED', 'GRADUATED_FROM'],
-            'BORN_IN': ['BORN_IN', 'BIRTHPLACE'],
-            'LOCATED_IN': ['LOCATED_IN', 'BASED_IN', 'SITUATED_IN']
-        }
+        # Remove common prefixes/suffixes that indicate direction
+        rel_type = re.sub(r'^IS_|_BY$|^WAS_', '', rel_type)
         
-        for standard_rel, variants in relation_map.items():
-            if rel_type in variants:
-                return standard_rel
+        # Handle common variations
+        if any(x in rel_type for x in ['FOUNDED', 'COFOUNDED', 'ESTABLISHED', 'CREATED', 'STARTED']):
+            return 'FOUNDED'
+            
         return rel_type
 
     def __hash__(self):
@@ -347,13 +342,17 @@ Text:
 Instructions:
 1. Analyze the text carefully to find relationships between the listed entities.
 2. Only extract relationships that are supported by the text.
-3. Use clear and consistent relationship types (e.g., FOUNDED, WORKS_AT, STUDIED_AT, BORN_IN).
+3. For each relationship:
+   - Consider the natural direction of the relationship
+   - Use a clear and consistent relationship type
+   - If unsure about direction, use the most logical one based on entity types
 4. Return each relationship in the format: source_entity|relationship_type|target_entity
 
-Example formats:
-John Smith|FOUNDED|Tech Corp
-Jane Doe|WORKS_AT|Tech Corp
-John Smith|GRADUATED_FROM|Harvard University
+Examples of relationship directionality:
+- For founding relationships: PERSON|FOUNDED|ORGANIZATION
+- For employment: PERSON|WORKS_AT|ORGANIZATION
+- For education: PERSON|STUDIED_AT|INSTITUTION
+- For location: ORGANIZATION|LOCATED_IN|CITY
 
 Return only the relationships, one per line:
 """

@@ -18,6 +18,19 @@ Important Kuzu-specific rules:
 3. Avoid Neo4j-specific functions that aren't supported in Kuzu
 4. For collecting results, use COLLECT() function
 5. For filtering, use WHERE clauses with standard comparison operators
+6. When querying relationships, consider both directions and semantic equivalence:
+   - For FOUNDED relationships: MATCH (p:PERSON)-[:FOUNDED]->(o:ORGANIZATION) OR (o:ORGANIZATION)<-[:FOUNDED]-(p:PERSON)
+   - Consider semantic equivalence: FOUNDED = COFOUNDED, FOUNDED_BY (reversed direction)
+   - Use UNION to combine results from different relationship patterns when needed
+
+Example for finding founders:
+MATCH (p:PERSON)-[r:FOUNDED|COFOUNDED]->(o:ORGANIZATION)
+WHERE o.name = 'CompanyName'
+RETURN COLLECT(p.name) as founders
+UNION
+MATCH (o:ORGANIZATION)<-[r:FOUNDED_BY|COFOUNDED_BY]-(p:PERSON)
+WHERE o.name = 'CompanyName'
+RETURN COLLECT(p.name) as founders
 
 Do not include any explanations or apologies in your responses.
 Do not respond to any questions that might ask anything else than for you to construct a Cypher statement.
@@ -53,4 +66,8 @@ Generate the Kùzu dialect of Cypher with the following rules in mind:
    - Specify relationship direction with -> or <-
    - Use variable length paths with [*min..max]
 5. Use WHERE clauses for filtering instead of complex functions
+6. Consider relationship variations and directionality:
+   - Use pattern matching for semantically equivalent relationships
+   - Consider both directions when appropriate (e.g., FOUNDED vs FOUNDED_BY)
+   - Use UNION to combine results from different relationship patterns
 """
