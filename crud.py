@@ -14,6 +14,7 @@ from llama_index.graph_stores.kuzu import KuzuPropertyGraphStore
 from llama_index.vector_stores.lancedb import LanceDBVectorStore
 from llama_index.llms.ollama import Ollama
 from entity_extractor import EntityRelationshipExtractor
+import numpy as np
 
 # Load environment variables
 load_dotenv()
@@ -52,6 +53,38 @@ def clean_table_name(name: str) -> str:
     if not cleaned[0].isalpha():
         cleaned = 'E_' + cleaned
     return cleaned
+
+def get_relationship_embedding(rel_type: str) -> np.ndarray:
+    """Generate embedding for a relationship type."""
+    # Create a descriptive text for the relationship
+    rel_text = f"This is a {rel_type} relationship between entities"
+    # Get embedding using the Ollama model
+    embedding = embed_model.get_text_embedding(rel_text)
+    return np.array(embedding)
+
+def find_similar_relationships(conn, rel_type: str, embedding: np.ndarray, threshold: float = 0.85) -> list:
+    """Find similar relationships based on vector similarity."""
+    try:
+        # Query to find relationships with similar embeddings
+        result = conn.execute(f"""
+            WITH vector_similarity($embedding, r.embedding) AS similarity
+            MATCH ()-[r]-()
+            WHERE similarity >= $threshold
+            RETURN DISTINCT type(r) AS rel_type, similarity
+            ORDER BY similarity DESC
+        """, parameters={
+            "embedding": embedding.tolist(),
+            "threshold": threshold
+        })
+        
+        similar_rels = []
+        while result.has_next():
+            row = result.get_next()
+            similar_rels.append((row[0], row[1]))  # (rel_type, similarity)
+        return similar_rels
+    except Exception as e:
+        print(f"Error finding similar relationships: {str(e)}")
+        return []
 
 # Load the dataset on Larry Fink
 original_documents = SimpleDirectoryReader("./data/blackrock").load_data()
@@ -158,9 +191,11 @@ for rel in relationships:
             # For specific relationships like BORN_IN, we use MANY_ONE as a person can only be born in one place
             multiplicity = "MANY_MANY"
             
+            # Add embedding vector field to relationship tables
             conn.execute(f"""
                 CREATE REL TABLE IF NOT EXISTS {relation_type} (
                     FROM {source_type} TO {target_type},
+                    embedding FLOAT[],
                     {multiplicity}
                 )
             """)
@@ -170,7 +205,7 @@ for rel in relationships:
             print(f"Error creating relationship table {relation_type}: {str(e)}")
             continue
 
-# Add relationships
+# Add relationships with embeddings
 for rel in relationships:
     source_type = entity_type_mapping.get(rel.source.type.upper())
     target_type = entity_type_mapping.get(rel.target.type.upper())
@@ -181,19 +216,31 @@ for rel in relationships:
     relation_type = clean_table_name(rel.relation_type)
     
     try:
-        # Create relationship using explicit node variables
+        # Generate embedding for the relationship
+        embedding = get_relationship_embedding(rel.relation_type)
+        
+        # Create relationship using explicit node variables and include embedding
         conn.execute(
             f"""
             MATCH (s:{source_type})
             MATCH (t:{target_type})
             WHERE s.id = $source_name AND t.id = $target_name
-            MERGE (s)-[r:{relation_type}]->(t)
+            MERGE (s)-[r:{relation_type} {{embedding: $embedding}}]->(t)
             """,
             parameters={
                 "source_name": rel.source.name,
-                "target_name": rel.target.name
+                "target_name": rel.target.name,
+                "embedding": embedding.tolist()
             },
         )
+        
+        # Find and print similar relationships
+        similar_rels = find_similar_relationships(conn, relation_type, embedding)
+        if similar_rels:
+            print(f"\nSimilar relationships to {relation_type}:")
+            for sim_rel, similarity in similar_rels:
+                print(f"  - {sim_rel} (similarity: {similarity:.3f})")
+            
     except Exception as e:
         print(f"Error adding relationship {rel.relation_type}: {str(e)}")
 
@@ -221,5 +268,21 @@ for name, date in birth_dates.items():
         )
     except Exception as e:
         print(f"Error adding birth date for {name}: {str(e)}")
+
+# Create an index on relationship embeddings for faster similarity search
+for rel_type in relationship_tables:
+    try:
+        conn.execute(f"CREATE INDEX ON {rel_type}(embedding)")
+    except Exception as e:
+        print(f"Error creating index on {rel_type}: {str(e)}")
+
+# Example query to find founders using vector similarity
+founder_embedding = get_relationship_embedding("FOUNDED")
+print("\nSearching for founder relationships using vector similarity...")
+similar_founder_rels = find_similar_relationships(conn, "FOUNDED", founder_embedding)
+if similar_founder_rels:
+    print("Found similar founder relationships:")
+    for rel_type, similarity in similar_founder_rels:
+        print(f"  - {rel_type} (similarity: {similarity:.3f})")
 
 conn.close()

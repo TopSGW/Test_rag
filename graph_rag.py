@@ -4,6 +4,8 @@ import kuzu
 from dotenv import load_dotenv
 import ell
 from openai import OpenAI
+from llama_index.embeddings.ollama import OllamaEmbedding
+import numpy as np
 
 import prompts
 
@@ -20,6 +22,19 @@ client = OpenAI(
 MODEL = "llama3.3:70b"
 ell.config.register_model(MODEL, client)
 
+# Set up the embedding model
+embed_model = OllamaEmbedding(
+    model_name="llama3.3:70b",
+    base_url="http://localhost:11434",
+    ollama_additional_kwargs={"mirostat": 0},
+)
+
+def get_relationship_embedding(rel_type: str) -> np.ndarray:
+    """Generate embedding for a relationship type."""
+    # Create a descriptive text that captures the semantic meaning of the relationship
+    rel_text = f"This represents a {rel_type} relationship between two entities"
+    embedding = embed_model.get_text_embedding(rel_text)
+    return np.array(embedding)
 
 class GraphRAG:
     """Graph Retrieval Augmented Generation from a Kùzu database."""
@@ -56,7 +71,7 @@ class GraphRAG:
             rel_tables = self.conn._get_rel_table_names()
             for table in rel_tables:
                 # Format the relationship pattern using source_name and target_name
-                relationships.append("(:%s)-[:%s]->(:%s)" % (table["src"], table["name"], table["dst"]))
+                relationships.append("(:%s)-[:%s {embedding: FLOAT[]}]->(:%s)" % (table["src"], table["name"], table["dst"]))
                 print(f"source:{table['src']} type::{table['name']}, target::{table['dst']}")
 
             # Get relationship properties
@@ -82,9 +97,11 @@ class GraphRAG:
                     props = [f"{prop[0]} ({prop[1]})" for prop in node["properties"]]
                     schema_parts.append(f"  {node['label']}: {', '.join(props)}")
 
-            # Add relationship patterns
+            # Add relationship patterns with vector similarity support
             if relationships:
                 schema_parts.append("\nValid relationship patterns:")
+                schema_parts.append("Note: All relationships support vector similarity matching for semantic equivalence.")
+                schema_parts.append("This means you can find semantically similar relationships regardless of their exact names.")
                 for rel in relationships:
                     schema_parts.append(f"  {rel}")
 
@@ -103,6 +120,11 @@ class GraphRAG:
             schema += "\n- Use MATCH to find patterns in the graph"
             schema += "\n- Properties can be accessed using dot notation (node.property)"
             schema += "\n- Relationships are directional, use -> for direction"
+            schema += "\n- For finding semantically similar relationships, use vector_similarity() function"
+            schema += "\n  Example: MATCH (a)-[r]->(b)"
+            schema += "\n          WITH vector_similarity(r.embedding, $rel_embedding) AS sim"
+            schema += "\n          WHERE sim > $threshold"
+            schema += "\n          RETURN a.name, type(r), b.name, sim"
             
             return schema
 
@@ -113,7 +135,20 @@ class GraphRAG:
     def query(self, question: str, cypher: str) -> str:
         """Use the generated Cypher statement to query the graph database."""
         try:
-            response = self.conn.execute(cypher)
+            # Extract key relationship terms from the question
+            words = question.lower().split()
+            # Generate embedding for the relationship implied by the question
+            rel_embedding = get_relationship_embedding(" ".join(words)).tolist()
+            
+            # Execute query with relationship embedding for semantic matching
+            response = self.conn.execute(
+                cypher,
+                parameters={
+                    "rel_embedding": rel_embedding,
+                    "threshold": 0.85  # Configurable similarity threshold
+                }
+            )
+
             result = []
             while response.has_next():
                 item = response.get_next()
@@ -158,18 +193,17 @@ class GraphRAG:
 
 if __name__ == "__main__":
     graph_rag = GraphRAG("./test_kuzudb")
-    question = "Who are the founders of BlackRock? Return the names as a numbered list."
-    response = graph_rag.run(question)
-    print(f"Q1: {question}\n\n{response}\n---\n")
-
-    question = "Where did Larry Fink graduate from?"
-    response = graph_rag.run(question)
-    print(f"Q2: {question}\n\n{response}\n---\n")
-
-    question = "When was Susan Wagner born?"
-    response = graph_rag.run(question)
-    print(f"Q3: {question}\n\n{response}\n---\n")
-
-    question = "How did Larry Fink and Rob Kapito meet?"
-    response = graph_rag.run(question)
-    print(f"Q4: {question}\n\n{response}")
+    
+    # Test queries with semantic relationship matching
+    questions = [
+        "Who are the founders of BlackRock? Return the names as a numbered list.",
+        "Where did Larry Fink graduate from?",
+        "When was Susan Wagner born?",
+        "How did Larry Fink and Rob Kapito meet?",
+        "What companies did Larry Fink establish?",
+        "Who started BlackRock with Larry Fink?",
+    ]
+    
+    for i, question in enumerate(questions, 1):
+        response = graph_rag.run(question)
+        print(f"\nQ{i}: {question}\n{response}\n---")
