@@ -156,7 +156,7 @@ for rel in relationships:
         try:
             # Most relationships are many-to-many by default
             # For specific relationships like BORN_IN, we use MANY_ONE as a person can only be born in one place
-            multiplicity = "MANY_ONE" if relation_type in ["BORN_IN", "WORKS_AT"] else "MANY_MANY"
+            multiplicity = "MANY_MANY"
             
             conn.execute(f"""
                 CREATE REL TABLE IF NOT EXISTS {relation_type} (
