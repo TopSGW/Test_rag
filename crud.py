@@ -140,6 +140,36 @@ for entity in entities:
     except Exception as e:
         print(f"Error adding entity {entity.name}: {str(e)}")
 
+# Track and create relationship tables
+relationship_tables = set()
+for rel in relationships:
+    source_type = entity_type_mapping.get(rel.source.type.upper())
+    target_type = entity_type_mapping.get(rel.target.type.upper())
+    if not source_type or not target_type:
+        continue
+    
+    # Clean the relationship type
+    relation_type = clean_table_name(rel.relation_type)
+    
+    # Create relationship table if it doesn't exist
+    if relation_type not in relationship_tables:
+        try:
+            # Most relationships are many-to-many by default
+            # For specific relationships like BORN_IN, we use MANY_ONE as a person can only be born in one place
+            multiplicity = "MANY_ONE" if relation_type in ["BORN_IN", "WORKS_AT"] else "MANY_MANY"
+            
+            conn.execute(f"""
+                CREATE REL TABLE IF NOT EXISTS {relation_type} (
+                    FROM {source_type} TO {target_type},
+                    {multiplicity}
+                )
+            """)
+            relationship_tables.add(relation_type)
+            print(f"Created relationship table {relation_type} with multiplicity {multiplicity}")
+        except Exception as e:
+            print(f"Error creating relationship table {relation_type}: {str(e)}")
+            continue
+
 # Add relationships
 for rel in relationships:
     source_type = entity_type_mapping.get(rel.source.type.upper())
